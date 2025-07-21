@@ -1,0 +1,41 @@
+[project]
+name = "scraper"
+version = "0.1.0"
+description = "Flexible async website scraper with Playwright and parquet output"
+readme = "README.md"
+authors = [
+    { email = "dvd.hnrchs@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "playwright>=1.40.0",
+    "aiohttp>=3.9.0",
+    "aiofiles>=23.2.1",
+    "pandas>=2.0.0",
+    "pyarrow>=15.0.0",
+    "pydantic>=2.5.0",
+    "asyncio-throttle>=1.0.2",
+    "beautifulsoup4>=4.12.0",
+    "tqdm>=4.66.0",
+    "google-cloud-storage>=2.10.0",
+    "tenacity>=8.2.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0"
+]
+
+[project.scripts]
+scraper = "scraper:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+test = [
+    "pytest>=8.4.1",
+    "pytest-asyncio>=1.1.0",
+]
