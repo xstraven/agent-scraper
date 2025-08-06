@@ -49,12 +49,35 @@ async def test_keyword_scraping():
     print(f"   Load Time: {result.load_time:.2f} seconds")
     print(f"   HTML Length: {len(result.html):,} characters")
     print(f"   Text Length: {len(result.text):,} characters")
+    print(f"   Clean Text Length: {len(result.text_clean):,} characters" if result.text_clean else "   Clean Text Length: N/A")
+    print(f"   Markdown Text Length: {len(result.text_markdown):,} characters" if result.text_markdown else "   Markdown Text Length: N/A")
     print(f"   Links Found: {len(result.links)}")
+    print()
+    
+    # Display text extraction comparison
+    print("🔍 Text Extraction Comparison:")
+    if result.text_clean:
+        print(f"   ✅ Trafilatura clean text extraction: SUCCESS")
+        print(f"      Clean text preview: {result.text_clean[:100]}...")
+    else:
+        print(f"   ❌ Trafilatura clean text extraction: FAILED")
+        
+    if result.text_markdown:
+        print(f"   ✅ Trafilatura markdown extraction: SUCCESS") 
+        print(f"      Markdown preview: {result.text_markdown[:100]}...")
+    else:
+        print(f"   ❌ Trafilatura markdown extraction: FAILED")
     print()
     
     # Check for keywords
     print("🔍 Keyword Analysis:")
-    content = (result.html + " " + result.text).lower()
+    # Include all text fields in keyword search
+    all_text_content = [result.html, result.text]
+    if result.text_clean:
+        all_text_content.append(result.text_clean)
+    if result.text_markdown:
+        all_text_content.append(result.text_markdown)
+    content = " ".join(all_text_content).lower()
     
     found_keywords = []
     missing_keywords = []
@@ -75,18 +98,21 @@ async def test_keyword_scraping():
     if missing_keywords:
         print(f"   Keywords missing: {missing_keywords}")
     
-    # Test passed if we found at least one keyword and no errors
-    success = len(found_keywords) > 0 and result.error is None
+    # Test passed if we found at least one keyword, no errors, and at least one enhanced text extraction worked
+    text_extraction_success = result.text_clean is not None or result.text_markdown is not None
+    success = len(found_keywords) > 0 and result.error is None and text_extraction_success
     
     if success:
         print(f"\n🎉 TEST PASSED!")
-        print(f"   Successfully scraped content and found expected keywords.")
+        print(f"   Successfully scraped content, found expected keywords, and enhanced text extraction worked.")
     else:
         print(f"\n❌ TEST FAILED!")
         if result.error:
             print(f"   Error: {result.error}")
         if len(found_keywords) == 0:
             print(f"   No expected keywords found in content.")
+        if not text_extraction_success:
+            print(f"   Enhanced text extraction (trafilatura) failed for both clean text and markdown.")
     
     return success
 

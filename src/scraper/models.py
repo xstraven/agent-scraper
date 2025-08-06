@@ -49,6 +49,8 @@ class ScrapedContent(BaseModel):
     title: Optional[str] = None
     html: str
     text: str
+    text_clean: Optional[str] = None  # Trafilatura-extracted clean text
+    text_markdown: Optional[str] = None  # Markdown-formatted content
     metadata: Dict[str, Any] = Field(default_factory=dict)
     links: List[str] = Field(default_factory=list)
     images: List[str] = Field(default_factory=list)

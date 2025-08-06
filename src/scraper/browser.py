@@ -9,6 +9,7 @@ from urllib.parse import urljoin, urlparse
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Error as PlaywrightError
 from bs4 import BeautifulSoup
 from tenacity import retry, stop_after_attempt, wait_exponential
+import trafilatura
 
 from .models import BrowserConfig, ProxyConfig, ScrapedContent, ScrapingStatus
 
@@ -156,6 +157,15 @@ class BrowserManager:
                 }
             """)
             
+            # Extract clean text using trafilatura
+            text_clean = None
+            text_markdown = None
+            try:
+                text_clean = trafilatura.extract(html, output_format='txt')
+                text_markdown = trafilatura.extract(html, output_format='markdown')
+            except Exception as e:
+                logger.warning(f"Trafilatura extraction failed for {url}: {e}")
+            
             # Extract links
             links = await page.evaluate("""
                 () => Array.from(document.querySelectorAll('a[href]'), a => a.href)
@@ -185,6 +195,8 @@ class BrowserManager:
                 "content_type": response.headers.get("content-type") if response else None,
                 "content_length": len(html),
                 "text_length": len(text),
+                "text_clean_length": len(text_clean) if text_clean else 0,
+                "text_markdown_length": len(text_markdown) if text_markdown else 0,
                 "link_count": len(links),
                 "image_count": len(images)
             })
@@ -196,6 +208,8 @@ class BrowserManager:
                 title=title,
                 html=html,
                 text=text,
+                text_clean=text_clean,
+                text_markdown=text_markdown,
                 metadata=metadata,
                 links=links,
                 images=images,
@@ -210,6 +224,8 @@ class BrowserManager:
                 url=str(url),
                 html="",
                 text="",
+                text_clean=None,
+                text_markdown=None,
                 load_time=time.time() - start_time,
                 error=error_msg
             )
@@ -221,6 +237,8 @@ class BrowserManager:
                 url=str(url),
                 html="",
                 text="",
+                text_clean=None,
+                text_markdown=None,
                 load_time=time.time() - start_time,
                 error=error_msg
             )
