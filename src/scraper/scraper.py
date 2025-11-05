@@ -28,13 +28,12 @@ class WebsiteScraper:
         self,
         max_concurrent: int = 3,
         requests_per_second: float = 1.0,
-        storage_config: Optional[StorageConfig] = None,
-        credentials_path: Optional[str] = None
+        storage_config: Optional[StorageConfig] = None
     ):
         self.max_concurrent = max_concurrent
         self.throttler = Throttler(rate_limit=requests_per_second)
         self.storage_config = storage_config or StorageConfig()
-        self.storage_backend = get_storage_backend(self.storage_config, credentials_path)
+        self.storage_backend = get_storage_backend(self.storage_config)
         
         # Semaphore for controlling concurrency
         self.semaphore = asyncio.Semaphore(max_concurrent)

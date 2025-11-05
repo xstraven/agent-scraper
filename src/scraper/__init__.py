@@ -48,15 +48,17 @@ def main():
     parser.add_argument("--urls", nargs="+", help="Multiple URLs to scrape")
     parser.add_argument("--file", help="CSV/Excel file with URLs")
     parser.add_argument("--url-column", default="url", help="Column name for URLs in file")
-    parser.add_argument("--output-dir", default="output", help="Output directory")
+    parser.add_argument("--output-dir", default="data/raw", help="Output directory")
     parser.add_argument("--max-pages", type=int, default=1, help="Max pages per website")
     parser.add_argument("--follow-links", action="store_true", help="Follow links on the same domain")
     parser.add_argument("--max-concurrent", type=int, default=3, help="Max concurrent browsers")
     parser.add_argument("--rate-limit", type=float, default=1.0, help="Requests per second")
     parser.add_argument("--headless", action="store_true", default=True, help="Run browser in headless mode")
     parser.add_argument("--timeout", type=int, default=30000, help="Page load timeout in milliseconds")
-    parser.add_argument("--bucket-name", help="Google Cloud Storage bucket name")
-    parser.add_argument("--credentials", help="Path to GCS credentials file")
+    parser.add_argument("--storage-type", default="local", choices=["local", "s3", "gcs"], help="Storage backend type")
+    parser.add_argument("--bucket-name", help="Cloud storage bucket name (for S3 or GCS)")
+    parser.add_argument("--aws-credentials", help="Path to AWS credentials JSON file")
+    parser.add_argument("--gcs-credentials", help="Path to GCS credentials JSON file")
     
     args = parser.parse_args()
     
@@ -67,23 +69,24 @@ def main():
     async def run_scraper():
         # Configure storage
         storage_config = StorageConfig(
+            storage_type=args.storage_type,
             output_dir=args.output_dir,
             bucket_name=args.bucket_name,
-            use_cloud_storage=bool(args.bucket_name)
+            aws_credentials_file=args.aws_credentials,
+            gcs_credentials_file=args.gcs_credentials
         )
-        
+
         # Configure browser
         browser_config = BrowserConfig(
             headless=args.headless,
             timeout=args.timeout
         )
-        
+
         # Initialize scraper
         scraper = WebsiteScraper(
             max_concurrent=args.max_concurrent,
             requests_per_second=args.rate_limit,
-            storage_config=storage_config,
-            credentials_path=args.credentials
+            storage_config=storage_config
         )
         
         if args.file:
