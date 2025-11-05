@@ -83,8 +83,20 @@ class ScrapingResult(BaseModel):
 
 class StorageConfig(BaseModel):
     """Configuration for storing scraped data."""
-    output_dir: str = "output"
+    storage_type: str = "local"  # "local", "s3", or "gcs"
+    output_dir: str = "data/raw"
+
+    # Cloud storage common
     bucket_name: Optional[str] = None
-    use_cloud_storage: bool = False
     partition_by_date: bool = True
     compression: str = "gzip"
+    enable_fallback: bool = True  # Fallback to local storage if cloud fails
+
+    # AWS S3 configuration
+    aws_credentials_file: Optional[str] = None  # Path to AWS credentials JSON file
+    aws_access_key_id: Optional[str] = None
+    aws_secret_access_key: Optional[str] = None
+    aws_region: str = "us-east-1"
+
+    # GCP Storage configuration
+    gcs_credentials_file: Optional[str] = None  # Path to GCP service account JSON file

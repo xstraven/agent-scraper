@@ -1,0 +1,2 @@
+# This file ensures the data/raw directory is tracked by git
+# Scraped data files will be saved here when using local storage

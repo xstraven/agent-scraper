@@ -20,7 +20,8 @@ class TestWebsiteScraper:
     def scraper(self):
         """Create a test scraper instance."""
         storage_config = StorageConfig(
-            output_dir="./test_output", use_cloud_storage=False
+            storage_type="local",
+            output_dir="./test_output"
         )
         return WebsiteScraper(
             max_concurrent=1,
