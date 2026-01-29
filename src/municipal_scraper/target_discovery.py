@@ -248,7 +248,7 @@ class TargetDiscovery:
         try:
             async with self.session.head(url, allow_redirects=True) as response:
                 return response.status == 200
-        except:
+        except Exception:
             return False
             
     def _clean_name_for_url(self, name: str) -> str:

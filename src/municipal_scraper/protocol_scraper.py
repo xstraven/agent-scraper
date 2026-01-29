@@ -9,6 +9,7 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 import aiofiles
 from pathlib import Path
+import os
 
 from ..scraper import WebsiteScraper, BrowserConfig, ScrapedContent
 from .data_models import (
@@ -19,9 +20,15 @@ from .data_models import (
 logger = logging.getLogger(__name__)
 
 
+# Default scraping configuration constants
+DEFAULT_MAX_CONCURRENT = 2  # Be respectful to municipal servers
+DEFAULT_REQUESTS_PER_SECOND = 0.5  # Conservative rate limiting
+DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB default download limit
+
+
 class ProtocolScraper:
     """Scraper for extracting meeting protocols from German municipal RIS systems."""
-    
+
     # Mapping German meeting types to enum values
     MEETING_TYPE_MAPPING = {
         'gemeinderat': MeetingType.GEMEINDERAT,
@@ -52,11 +59,13 @@ class ProtocolScraper:
     def __init__(
         self,
         scraper: Optional[WebsiteScraper] = None,
-        download_dir: str = "./downloads/protocols"
+        download_dir: str = "./downloads/protocols",
+        max_concurrent: int = DEFAULT_MAX_CONCURRENT,
+        requests_per_second: float = DEFAULT_REQUESTS_PER_SECOND
     ):
         self.scraper = scraper or WebsiteScraper(
-            max_concurrent=2,  # Be respectful to municipal servers
-            requests_per_second=0.5  # Conservative rate limiting
+            max_concurrent=max_concurrent,
+            requests_per_second=requests_per_second
         )
         self.download_dir = Path(download_dir)
         self.download_dir.mkdir(parents=True, exist_ok=True)
@@ -413,29 +422,68 @@ class ProtocolScraper:
     async def _download_document(
         self,
         document: MeetingDocument,
-        municipality: Municipality
+        municipality: Municipality,
+        max_file_size: int = DEFAULT_MAX_FILE_SIZE
     ) -> bool:
-        """Download a meeting document."""
+        """Download a meeting document.
+
+        Args:
+            document: The document to download
+            municipality: The municipality this document belongs to
+            max_file_size: Maximum allowed file size in bytes (default 100MB)
+        """
         if not document.download_url or not self.session:
             return False
-            
+
         try:
             # Create municipality-specific download directory
             muni_dir = self.download_dir / municipality.name
             muni_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Generate local filename
+
+            # Generate local filename with sanitization
             filename = document.file_name or f"document_{int(datetime.now().timestamp())}"
+            # Sanitize filename to prevent path traversal
+            filename = os.path.basename(filename).replace('/', '').replace('\\', '')
+            if not filename or filename in ('.', '..'):
+                filename = f"document_{int(datetime.now().timestamp())}"
             if not any(filename.endswith(ext) for ext in self.DOCUMENT_EXTENSIONS):
                 filename += f".{document.file_format or 'pdf'}"
-                
+
             local_path = muni_dir / filename
-            
-            # Download the file
+
+            # Security check: ensure the resolved path is within the download directory
+            resolved_path = local_path.resolve()
+            resolved_download_dir = self.download_dir.resolve()
+            if not str(resolved_path).startswith(str(resolved_download_dir)):
+                logger.error(f"Path traversal attempt detected: {local_path}")
+                return False
+
+            # Download the file with size limit check
             async with self.session.get(str(document.download_url)) as response:
                 if response.status == 200:
+                    # Check Content-Length header for file size
+                    content_length = response.headers.get('Content-Length')
+                    if content_length and int(content_length) > max_file_size:
+                        logger.warning(
+                            f"File too large ({int(content_length)} bytes > {max_file_size} bytes): "
+                            f"{document.download_url}"
+                        )
+                        return False
+
+                    # Download with streaming and size tracking
+                    downloaded_size = 0
                     async with aiofiles.open(local_path, 'wb') as f:
                         async for chunk in response.content.iter_chunked(8192):
+                            downloaded_size += len(chunk)
+                            if downloaded_size > max_file_size:
+                                logger.warning(
+                                    f"Download exceeded size limit ({max_file_size} bytes): "
+                                    f"{document.download_url}"
+                                )
+                                # Clean up partial file
+                                await f.close()
+                                local_path.unlink(missing_ok=True)
+                                return False
                             await f.write(chunk)
                             
                     document.local_path = str(local_path)
@@ -484,29 +532,62 @@ class ProtocolScraper:
             logger.error(f"Failed to extract protocol content: {e}")
             return None
             
+    # German month name mapping
+    GERMAN_MONTHS = {
+        'januar': 1, 'februar': 2, 'märz': 3, 'maerz': 3, 'april': 4,
+        'mai': 5, 'juni': 6, 'juli': 7, 'august': 8, 'september': 9,
+        'oktober': 10, 'november': 11, 'dezember': 12
+    }
+
     # Utility methods
-    
+
     def _extract_meeting_date(self, text: str) -> Optional[datetime]:
-        """Extract meeting date from text."""
-        # German date patterns
-        date_patterns = [
-            r'(\d{1,2})\.(\d{1,2})\.(\d{4})',  # DD.MM.YYYY
-            r'(\d{4})-(\d{1,2})-(\d{1,2})'     # YYYY-MM-DD
-        ]
-        
-        for pattern in date_patterns:
-            match = re.search(pattern, text)
-            if match:
-                try:
-                    if '.' in pattern:
-                        day, month, year = match.groups()
-                        return datetime(int(year), int(month), int(day))
-                    else:
-                        year, month, day = match.groups()
-                        return datetime(int(year), int(month), int(day))
-                except ValueError:
-                    continue
-                    
+        """Extract meeting date from text.
+
+        Supports the following German date formats:
+        - DD.MM.YYYY (e.g., "15.01.2025")
+        - YYYY-MM-DD (e.g., "2025-01-15")
+        - German long form with weekday (e.g., "Mittwoch, 15. Januar 2025")
+        - German long form without weekday (e.g., "15. Januar 2025")
+        """
+        text_lower = text.lower()
+
+        # Pattern 1: German long form with optional weekday
+        # e.g., "Mittwoch, 15. Januar 2025" or "15. Januar 2025"
+        german_long_pattern = (
+            r'(?:\w+,?\s+)?'  # Optional weekday with comma
+            r'(\d{1,2})\.\s*'  # Day with dot
+            r'(' + '|'.join(self.GERMAN_MONTHS.keys()) + r')\s+'  # German month name
+            r'(\d{4})'  # Year
+        )
+        match = re.search(german_long_pattern, text_lower)
+        if match:
+            try:
+                day = int(match.group(1))
+                month = self.GERMAN_MONTHS[match.group(2)]
+                year = int(match.group(3))
+                return datetime(year, month, day)
+            except (ValueError, KeyError):
+                pass
+
+        # Pattern 2: DD.MM.YYYY
+        match = re.search(r'(\d{1,2})\.(\d{1,2})\.(\d{4})', text)
+        if match:
+            try:
+                day, month, year = match.groups()
+                return datetime(int(year), int(month), int(day))
+            except ValueError:
+                pass
+
+        # Pattern 3: YYYY-MM-DD
+        match = re.search(r'(\d{4})-(\d{1,2})-(\d{1,2})', text)
+        if match:
+            try:
+                year, month, day = match.groups()
+                return datetime(int(year), int(month), int(day))
+            except ValueError:
+                pass
+
         return None
         
     def _determine_meeting_type(self, text: str) -> MeetingType:
@@ -537,12 +618,21 @@ class ProtocolScraper:
         return None
         
     def _extract_filename_from_url(self, url: str) -> str:
-        """Extract filename from URL."""
+        """Extract and sanitize filename from URL.
+
+        Uses os.path.basename to prevent path traversal attacks.
+        """
         try:
             parsed = urlparse(url)
-            filename = parsed.path.split('/')[-1]
-            return filename if filename else "document"
-        except:
+            # Use os.path.basename to get just the filename and prevent path traversal
+            filename = os.path.basename(parsed.path)
+            # Additional sanitization: remove any remaining path separators
+            filename = filename.replace('/', '').replace('\\', '')
+            # Ensure we have a valid filename
+            if not filename or filename in ('.', '..'):
+                return "document"
+            return filename
+        except Exception:
             return "document"
             
     async def _discover_sdnet_meetings(
