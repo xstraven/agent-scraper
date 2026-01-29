@@ -3,7 +3,8 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 import polars as pl
@@ -40,14 +41,14 @@ class LocalStorageBackend(StorageBackend):
     def _get_file_path(self, website_id: str, file_type: str = "parquet") -> Path:
         """Get file path for storing data."""
         if self.config.partition_by_date:
-            date_str = datetime.utcnow().strftime("%Y_%m_%d")
+            date_str = datetime.now(timezone.utc).strftime("%Y_%m_%d")
             file_dir = self.output_dir / date_str
         else:
             file_dir = self.output_dir
 
         file_dir.mkdir(parents=True, exist_ok=True)
 
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         filename = f"{website_id}_{timestamp}.{file_type}"
 
         return file_dir / filename
@@ -147,12 +148,12 @@ class CloudStorageBackend(StorageBackend):
     def _get_blob_path(self, website_id: str, file_type: str = "parquet") -> str:
         """Get blob path for storing data."""
         if self.config.partition_by_date:
-            date_str = datetime.utcnow().strftime("%Y_%m_%d")
+            date_str = datetime.now(timezone.utc).strftime("%Y_%m_%d")
             path_prefix = f"data/{date_str}"
         else:
             path_prefix = "data"
 
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         filename = f"{website_id}_{timestamp}.{file_type}"
 
         return f"{path_prefix}/{filename}"
@@ -191,25 +192,28 @@ class CloudStorageBackend(StorageBackend):
 
             df = pl.DataFrame(df_data)
 
-            # Save to temporary file first
-            temp_file = f"/tmp/{website_id}_{datetime.utcnow().isoformat()}.parquet"
-            df.write_parquet(
-                temp_file,
-                compression=self.config.compression
-            )
+            # Save to secure temporary file
+            fd, temp_file = tempfile.mkstemp(suffix='.parquet', prefix=f'{website_id}_')
+            try:
+                os.close(fd)  # Close the file descriptor, we'll write via polars
+                df.write_parquet(
+                    temp_file,
+                    compression=self.config.compression
+                )
 
-            # Upload to cloud storage
-            def _upload():
-                blob = self.bucket.blob(blob_path)
-                blob.upload_from_filename(temp_file)
+                # Upload to cloud storage
+                def _upload():
+                    blob = self.bucket.blob(blob_path)
+                    blob.upload_from_filename(temp_file)
 
-            await asyncio.get_event_loop().run_in_executor(None, _upload)
+                await asyncio.get_event_loop().run_in_executor(None, _upload)
 
-            # Clean up temp file
-            os.unlink(temp_file)
-
-            logger.info(f"Saved scraping result to gs://{self.config.bucket_name}/{blob_path}")
-            return f"gs://{self.config.bucket_name}/{blob_path}"
+                logger.info(f"Saved scraping result to gs://{self.config.bucket_name}/{blob_path}")
+                return f"gs://{self.config.bucket_name}/{blob_path}"
+            finally:
+                # Always clean up temp file, even on failure
+                if os.path.exists(temp_file):
+                    os.unlink(temp_file)
 
         except Exception as e:
             logger.error(f"Failed to save result to cloud storage: {e}")
@@ -220,7 +224,7 @@ class CloudStorageBackend(StorageBackend):
         try:
             base_path = f"scraped_pages/{website_id}"
             if self.config.partition_by_date:
-                date_str = datetime.utcnow().strftime("%Y/%m/%d")
+                date_str = datetime.now(timezone.utc).strftime("%Y/%m/%d")
                 base_path = f"{base_path}/{date_str}"
                 
             saved_files = []
@@ -292,12 +296,12 @@ class S3StorageBackend(StorageBackend):
     def _get_s3_key(self, website_id: str, file_type: str = "parquet") -> str:
         """Get S3 key for storing data."""
         if self.config.partition_by_date:
-            date_str = datetime.utcnow().strftime("%Y_%m_%d")
+            date_str = datetime.now(timezone.utc).strftime("%Y_%m_%d")
             path_prefix = f"data/{date_str}"
         else:
             path_prefix = "data"
 
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         filename = f"{website_id}_{timestamp}.{file_type}"
 
         return f"{path_prefix}/{filename}"
@@ -336,24 +340,27 @@ class S3StorageBackend(StorageBackend):
 
             df = pl.DataFrame(df_data)
 
-            # Save to temporary file first
-            temp_file = f"/tmp/{website_id}_{datetime.utcnow().isoformat()}.parquet"
-            df.write_parquet(
-                temp_file,
-                compression=self.config.compression
-            )
+            # Save to secure temporary file
+            fd, temp_file = tempfile.mkstemp(suffix='.parquet', prefix=f'{website_id}_')
+            try:
+                os.close(fd)  # Close the file descriptor, we'll write via polars
+                df.write_parquet(
+                    temp_file,
+                    compression=self.config.compression
+                )
 
-            # Upload to S3
-            def _upload():
-                self.s3_client.upload_file(temp_file, self.bucket_name, s3_key)
+                # Upload to S3
+                def _upload():
+                    self.s3_client.upload_file(temp_file, self.bucket_name, s3_key)
 
-            await asyncio.get_event_loop().run_in_executor(None, _upload)
+                await asyncio.get_event_loop().run_in_executor(None, _upload)
 
-            # Clean up temp file
-            os.unlink(temp_file)
-
-            logger.info(f"Saved scraping result to s3://{self.bucket_name}/{s3_key}")
-            return f"s3://{self.bucket_name}/{s3_key}"
+                logger.info(f"Saved scraping result to s3://{self.bucket_name}/{s3_key}")
+                return f"s3://{self.bucket_name}/{s3_key}"
+            finally:
+                # Always clean up temp file, even on failure
+                if os.path.exists(temp_file):
+                    os.unlink(temp_file)
 
         except Exception as e:
             logger.error(f"Failed to save result to S3: {e}")
@@ -363,7 +370,7 @@ class S3StorageBackend(StorageBackend):
         """Save individual pages to S3."""
         try:
             if self.config.partition_by_date:
-                date_str = datetime.utcnow().strftime("%Y_%m_%d")
+                date_str = datetime.now(timezone.utc).strftime("%Y_%m_%d")
                 base_path = f"pages/{website_id}/{date_str}"
             else:
                 base_path = f"pages/{website_id}"

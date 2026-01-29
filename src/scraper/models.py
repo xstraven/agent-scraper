@@ -1,5 +1,5 @@
 """Data models for the website scraper."""
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field, HttpUrl
@@ -29,6 +29,10 @@ class BrowserConfig(BaseModel):
     timeout: int = 30000
     wait_for_load_state: str = "networkidle"
     block_resources: List[str] = Field(default_factory=lambda: ["image", "stylesheet", "font", "media"])
+    # Security: Only disable sandbox in containerized environments (Docker/CI)
+    disable_sandbox: bool = False
+    # Maximum content size to accept (default 10MB)
+    max_content_size: int = 10 * 1024 * 1024
 
 
 class ScrapingRequest(BaseModel):
@@ -54,7 +58,7 @@ class ScrapedContent(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     links: List[str] = Field(default_factory=list)
     images: List[str] = Field(default_factory=list)
-    scraped_at: datetime = Field(default_factory=datetime.utcnow)
+    scraped_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     load_time: float = 0.0
     status_code: Optional[int] = None
     error: Optional[str] = None

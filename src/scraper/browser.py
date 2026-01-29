@@ -47,15 +47,21 @@ class BrowserManager:
             self.playwright = await async_playwright().start()
             
             # Browser launch options
+            # Note: --disable-web-security removed for security (prevents XSS via scraped pages)
+            # --no-sandbox only enabled when explicitly configured (for containerized environments)
+            browser_args = [
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-features=VizDisplayCompositor"
+            ]
+            # Only disable sandbox in containerized environments where it's required
+            if self.config.disable_sandbox:
+                browser_args.append("--no-sandbox")
+                logger.warning("Browser sandbox disabled - only use in containerized environments")
+
             launch_options = {
                 "headless": self.config.headless,
-                "args": [
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--disable-web-security",
-                    "--disable-features=VizDisplayCompositor"
-                ]
+                "args": browser_args
             }
             
             # Add proxy if configured
@@ -144,8 +150,19 @@ class BrowserManager:
             # Wait for any dynamic content
             await asyncio.sleep(1)
             
-            # Extract content
+            # Extract content with size limit check
             html = await page.content()
+
+            # Enforce content size limit to prevent OOM/DoS
+            if len(html) > self.config.max_content_size:
+                error_msg = (
+                    f"Content size ({len(html)} bytes) exceeds limit "
+                    f"({self.config.max_content_size} bytes) for {url}"
+                )
+                logger.warning(error_msg)
+                # Truncate to limit
+                html = html[:self.config.max_content_size]
+
             title = await page.title()
             
             # Extract text content

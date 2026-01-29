@@ -1,15 +1,15 @@
 """Main scraper implementation with async support."""
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Set, Dict, Any
 from urllib.parse import urljoin, urlparse
 from asyncio_throttle import Throttler
 
 from .models import (
-    ScrapingRequest, 
-    ScrapingResult, 
-    ScrapedContent, 
+    ScrapingRequest,
+    ScrapingResult,
+    ScrapedContent,
     ScrapingStatus,
     BrowserConfig,
     ProxyConfig,
@@ -20,21 +20,29 @@ from .storage import get_storage_backend
 
 logger = logging.getLogger(__name__)
 
+# Default limits
+DEFAULT_MAX_QUEUE_SIZE = 10000  # Maximum URLs to queue when following links
+DEFAULT_JOB_TIMEOUT = 3600  # 1 hour default job timeout in seconds
+
 
 class WebsiteScraper:
     """Main scraper class for crawling websites."""
-    
+
     def __init__(
         self,
         max_concurrent: int = 3,
         requests_per_second: float = 1.0,
-        storage_config: Optional[StorageConfig] = None
+        storage_config: Optional[StorageConfig] = None,
+        max_queue_size: int = DEFAULT_MAX_QUEUE_SIZE,
+        job_timeout: Optional[float] = DEFAULT_JOB_TIMEOUT
     ):
         self.max_concurrent = max_concurrent
         self.throttler = Throttler(rate_limit=requests_per_second)
         self.storage_config = storage_config or StorageConfig()
         self.storage_backend = get_storage_backend(self.storage_config)
-        
+        self.max_queue_size = max_queue_size
+        self.job_timeout = job_timeout
+
         # Semaphore for controlling concurrency
         self.semaphore = asyncio.Semaphore(max_concurrent)
         
@@ -57,75 +65,99 @@ class WebsiteScraper:
             website_id=request.website_id,
             original_url=str(request.url),
             status=ScrapingStatus.RUNNING,
-            started_at=datetime.utcnow()
+            started_at=datetime.now(timezone.utc)
         )
-        
-        try:
+
+        async def _do_scrape() -> None:
+            """Inner scraping logic wrapped for timeout."""
+            nonlocal result
+
             # Start with the main URL
             urls_to_scrape = [str(request.url)]
             scraped_urls: Set[str] = set()
             all_pages: List[ScrapedContent] = []
-            
+
             # Get domain for link filtering
             domain = urlparse(str(request.url)).netloc
-            
+
             async with BrowserManager(request.browser_config, request.proxy_config) as browser:
                 for current_url in urls_to_scrape[:request.max_pages]:
                     if current_url in scraped_urls:
                         continue
-                        
+
                     logger.info(f"Scraping: {current_url}")
-                    
+
                     async with self.semaphore:
                         async with self.throttler:
                             page_content = await browser.scrape_page(
-                                current_url, 
+                                current_url,
                                 request.custom_selectors
                             )
-                            
+
                     scraped_urls.add(current_url)
                     all_pages.append(page_content)
-                    
+
                     # If following links and haven't reached max pages
-                    if (request.follow_links and 
-                        len(scraped_urls) < request.max_pages and 
-                        page_content.html and 
+                    if (request.follow_links and
+                        len(scraped_urls) < request.max_pages and
+                        page_content.html and
                         not page_content.error):
-                        
+
                         # Extract and filter links
                         page_links = browser.extract_links(page_content.html, current_url)
                         same_domain_links = [
-                            link for link in page_links 
+                            link for link in page_links
                             if urlparse(link).netloc == domain and link not in scraped_urls
                         ]
-                        
-                        # Add new links to scrape queue
+
+                        # Add new links to scrape queue with queue size limit
                         for link in same_domain_links[:5]:  # Limit new links per page
                             if link not in urls_to_scrape:
+                                if len(urls_to_scrape) >= self.max_queue_size:
+                                    logger.warning(
+                                        f"URL queue limit reached ({self.max_queue_size}), "
+                                        f"not adding more URLs"
+                                    )
+                                    break
                                 urls_to_scrape.append(link)
-                                
+
                         logger.info(f"Found {len(same_domain_links)} same-domain links")
-                        
+
             # Update result
             result.pages = all_pages
             result.total_pages = len(all_pages)
             result.successful_pages = sum(1 for p in all_pages if not p.error)
             result.failed_pages = sum(1 for p in all_pages if p.error)
             result.status = ScrapingStatus.SUCCESS
-            result.completed_at = datetime.utcnow()
-            
+
+        try:
+            # Apply overall job timeout if configured
+            if self.job_timeout:
+                await asyncio.wait_for(_do_scrape(), timeout=self.job_timeout)
+            else:
+                await _do_scrape()
+
+            result.completed_at = datetime.now(timezone.utc)
+
             # Save to storage
             storage_path = await self.storage_backend.save_result(result)
             logger.info(f"Saved scraping result to: {storage_path}")
-            
+
+        except asyncio.TimeoutError:
+            error_msg = f"Job timeout ({self.job_timeout}s) exceeded for {request.url}"
+            logger.error(error_msg)
+            result.status = ScrapingStatus.TIMEOUT
+            result.error = error_msg
+            result.completed_at = datetime.now(timezone.utc)
+
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Scraping failed for {request.url}: {error_msg}")
-            
+
             result.status = ScrapingStatus.FAILED
             result.error = error_msg
-            result.completed_at = datetime.utcnow()
-            
+            result.completed_at = datetime.now(timezone.utc)
+
         return result
         
     async def scrape_multiple_urls(
@@ -217,8 +249,8 @@ class WebsiteScraper:
             original_url="batch_processing",
             pages=results,
             status=ScrapingStatus.SUCCESS,
-            started_at=datetime.utcnow(),
-            completed_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(timezone.utc),
             total_pages=len(results),
             successful_pages=sum(1 for r in results if not r.error),
             failed_pages=sum(1 for r in results if r.error)
