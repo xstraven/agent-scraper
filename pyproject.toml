@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Flexible async website scraper with Playwright and parquet output"
 readme = "README.md"
 authors = [
-    { email = "dvd.hnrchs@gmail.com" }
+    { email = "xstraven@proton.me" }
 ]
 requires-python = ">=3.12"
 dependencies = [
