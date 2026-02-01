@@ -1,7 +1,7 @@
 [project]
 name = "scraper"
 version = "0.1.0"
-description = "Flexible async website scraper with Playwright and parquet output"
+description = "Flexible async website scraper with playwright and parquet output"
 readme = "README.md"
 authors = [
     { email = "xstraven@proton.me" }
