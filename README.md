@@ -1,3 +1,5 @@
+NOT UNDER ACTIVE DEVELOPMENT ATM
+
 # Flexible Website Scraper
 
 A modern, async website scraper built with Python, Playwright, and pandas. Designed for scalable web scraping with automatic parquet file output and optional cloud storage support.
